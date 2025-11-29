@@ -1,0 +1,33 @@
+# Development and testing dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+pytest-cov==4.1.0
+
+# AWS service mocking
+moto[s3,sqs,dynamodb]==4.2.0
+
+# Code quality
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+mypy==1.7.1
+
+# Testing utilities
+faker==20.1.0
+freezegun==1.2.2
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==1.3.0
+
+# Development tools
+pre-commit==3.5.0
+jupyter==1.0.0
+
+# Performance testing
+locust==2.17.0
+
+# API testing
+httpx==0.25.2
+requests-mock==1.11.0
