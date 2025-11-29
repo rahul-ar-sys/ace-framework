@@ -9,6 +9,8 @@ import pandas as pd
 from dataclasses import is_dataclass, asdict
 import uuid
 import re
+from openai import OpenAI
+from config.settings import get_config
 
 from config.models.core_models import (
     Submission,
@@ -40,6 +42,8 @@ class CSVParser:
     def __init__(self):
         """Initialize Hybrid CSV Parser."""
         self.supported_artifact_types = {t.value for t in ArtifactType}
+        self.config = get_config()
+        self.client = OpenAI(api_key=self.config.openai_api_key)
 
     def parse_csv(self, csv_data: bytes, as_json: bool = False) -> List[Any]:
         """
@@ -72,14 +76,13 @@ class CSVParser:
             df = pd.read_csv(io.StringIO(csv_string))
             df = df.where(pd.notnull(df), None)
 
-            # ---- Known schema detection ----
-            if all(col in df.columns for col in self.REQUIRED_COLUMNS):
-                logger.info("Recognized known CSV schema — using structured parser")
-                return self._parse_known_schema(df, as_json)
+            # ---- Always use LLM-based parser ----
+            logger.info("Delegating CSV parsing to LLM (OpenAI API)")
+            submissions = self._parse_with_llm(df)
 
-            # ---- Fallback to dynamic parse (Skillioma-style detection) ----
-            logger.warning("Unknown or partial schema — using smart dynamic parser")
-            return self._parse_dynamic(df)
+            if as_json:
+                return [self._to_json_safe(s) for s in submissions]
+            return submissions
 
         except Exception as e:
             logger.exception("Failed to parse CSV: %s", e)
@@ -252,185 +255,158 @@ class CSVParser:
     # --------------------------------------------------------------------------------
     # 2️⃣ Dynamic / Skillioma-style parser (NEW)
     # --------------------------------------------------------------------------------
-    def _parse_dynamic(self, df: pd.DataFrame) -> List[Submission]:
+    # --------------------------------------------------------------------------------
+    # 2️⃣ LLM-based Parser (NEW)
+    # --------------------------------------------------------------------------------
+    def _parse_with_llm(self, df: pd.DataFrame) -> List[Submission]:
         """
-        Smart dynamic parser for vendor CSVs (Skillioma-like).
-        - Detects MCQ, Writing, Speaking/Listening columns by the logic you provided.
-        - Produces Submission objects whose artifacts are MCQArtifact, TextArtifact, AudioArtifact.
-        - Conservative: doesn't invent correctness if not provided.
+        Use OpenAI API to parse CSV data into structured Submission objects.
         """
-        # Column detection per your rule
-        mcq_cols = [col for col in df.columns if any(col.startswith(f"{i}.") for i in range(1, 23))]
-        writing_cols = [col for col in df.columns if "Writing prompt" in col]
-        speaking_cols = [col for col in df.columns if "Speaking prompt" in col]
-        listening_cols = [col for col in df.columns if "Listening prompt" in col]
+        # Convert DataFrame to CSV string
+        csv_string = df.to_csv(index=False)
+        
+        # Construct the prompt
+        prompt = f"""
+        Analyze the following CSV data and parse it into a JSON structure.
+        The JSON should be a list of submissions.
+        
+        Schema details:
+        - The output must be a JSON object with a key "submissions" containing a list.
+        - Each item in the list is a Submission.
+        - Submission has 'metadata' (object) and 'artifacts' (list of objects).
+        - Metadata fields: submission_id, batch_id, student_id, course_id, assignment_id, timestamp (ISO format).
+        - Artifact fields: artifact_id, artifact_type ("mcq", "text", "audio"), content, metadata (key-value pairs), weight (float, default 1.0).
+        
+        For MCQ artifacts (artifact_type="mcq"):
+        - content should be an object with: answers (list), total_questions (int), correct_answers (int), score_percentage (float).
+        - answers list items: question_id, selected_option, correct_option, is_correct (bool).
+        
+        IMPORTANT RULES FOR MCQ:
+        - 'selected_option' MUST be the actual text answer provided by the student (e.g., "Blue", "Paris"), NOT the score (e.g., "1/1", "1").
+        - 'correct_option' MUST be the correct text answer if available.
+        - If a column contains "1/1" or "0/1", that is the SCORE, not the option. Use it to determine 'is_correct' but do NOT use it as the option text.
+        
+        For TEXT artifacts (artifact_type="text"):
+        - content should be an object with: text_content (string), word_count (int).
+        
+        For AUDIO artifacts (artifact_type="audio"):
+        - content should be an object with: audio_data (null), duration_seconds (float), sample_rate (int), format (string), transcript (string or null).
+        
+        Infer the structure from the CSV columns.
+        - Columns starting with numbers or containing "score" are likely MCQs.
+        - Columns with "Writing prompt" or similar text fields are TEXT.
+        - Columns with "Speaking prompt", "Listening prompt" or URLs are AUDIO.
+        
+        CSV Data:
+        {csv_string}
+        """
 
-        submissions: List[Submission] = []
-
-        # helper to extract a URL from row dict (first http(s) match)
-        url_re = re.compile(r"https?://\S+")
-        def _find_first_url_in_row(row_dict: Dict[str, Any]) -> Optional[str]:
-            for v in row_dict.values():
-                if isinstance(v, str):
-                    m = url_re.search(v)
-                    if m:
-                        return m.group(0)
-            return None
-
-        for idx, row in df.iterrows():
-            row_dict = row.to_dict()
-
-            # Build metadata values - prefer explicit submission_id/student_id if present
-            submission_id = str(row_dict.get("submission_id") or row_dict.get("submissionId") or uuid.uuid4())
-            student_id = str(row_dict.get("student_id") or row_dict.get("userId") or row_dict.get("user_id") or f"student_{idx}")
-            batch_id = str(row_dict.get("batch_id") or "dynamic_batch")
-
-            # Build artifacts list
-            artifacts: List[Artifact] = []
-
-            # 1) MCQs — create one MCQArtifact per question column (we create single-answer MCQAnswer)
-            for qcol in mcq_cols:
-                try:
-                    answer_val = row_dict.get(qcol)
-                    # try to find a score for this question - common patterns: "<col> - score" or "<col> Score"
-                    score_val = None
-                    possible_score_keys = [f"{qcol} - score", f"{qcol} Score", f"{qcol}_score", f"{qcol} score"]
-                    for k in possible_score_keys:
-                        if k in row_dict and row_dict[k] is not None:
-                            score_val = row_dict[k]
-                            break
-
-                    # create single MCQAnswer
-                    selected_option = str(answer_val) if answer_val is not None else ""
-                    is_correct = None
-                    if score_val is not None:
-                        # score may be "1/1" or numeric
-                        if isinstance(score_val, str) and "/" in score_val:
-                            try:
-                                raw = score_val.strip()
-                                if raw.count("/") == 1:
-                                    num, den = raw.split("/")
-                                    is_correct = float(num) >= float(den)  # 1/1 -> True
-                            except Exception:
-                                is_correct = None
-                        else:
-                            try:
-                                is_correct = float(score_val) > 0
-                            except Exception:
-                                is_correct = None
-
-                    mcq_answer = MCQAnswer(
-                        question_id=qcol,
-                        selected_option=selected_option,
-                        correct_option=None,
-                        is_correct=bool(is_correct) if is_correct is not None else False
-                    )
-
-                    mcq_art = MCQArtifact(
-                        answers=[mcq_answer],
-                        total_questions=1,
-                        correct_answers=1 if mcq_answer.is_correct else 0,
-                        score_percentage=(100.0 if mcq_answer.is_correct else 0.0)
-                    )
-
-                    artifacts.append(
-                        Artifact(
-                            artifact_id=f"{submission_id}_mcq_{qcol}",
-                            artifact_type=ArtifactType.MCQ,
-                            content=mcq_art,
-                            metadata={"question_col": qcol, "raw_value": answer_val},
-                            weight=1.0,
-                        )
-                    )
-                except Exception as e:
-                    logger.debug("Skipping MCQ col %s due to parsing issue: %s", qcol, e)
-                    continue
-
-            # 2) Writing columns → TextArtifact
-            for wcol in writing_cols:
-                try:
-                    text_val = row_dict.get(wcol) or ""
-                    txt = TextArtifact(text_content=str(text_val), word_count=len(str(text_val).split()))
-                    artifacts.append(
-                        Artifact(
-                            artifact_id=f"{submission_id}_text_{wcol}",
-                            artifact_type=ArtifactType.TEXT,
-                            content=txt,
-                            metadata={"question_col": wcol},
-                            weight=1.0,
-                        )
-                    )
-                except Exception as e:
-                    logger.debug("Skipping writing col %s due to parsing issue: %s", wcol, e)
-                    continue
-
-            # 3) Speaking / Listening → AudioArtifact
-            # Try to find a URL for each speaking column; if absent, fall back to any URL in the row.
-            for scol in speaking_cols + listening_cols:
-                try:
-                    raw = row_dict.get(scol)
-                    audio_url = None
-                    if isinstance(raw, str) and raw.strip().startswith("http"):
-                        audio_url = raw.strip()
-                    else:
-                        # Patterns where media lives in nested JSON-like cell or adjacent column
-                        # Try to extract URL from the string cell
-                        if isinstance(raw, str):
-                            m = re.search(r"https?://\S+", raw)
-                            if m:
-                                audio_url = m.group(0)
-
-                        # fallback: search the whole row for a URL
-                        if not audio_url:
-                            audio_url = _find_first_url_in_row(row_dict)
-
-                    audio_art = AudioArtifact(
-                        audio_data=b"",
-                        duration_seconds=float(row_dict.get(f"{scol}_duration", 0.0) or 0.0),
-                        sample_rate=int(row_dict.get(f"{scol}_sample_rate", 44100) or 44100),
-                        format=(audio_url.split(".")[-1] if audio_url else "wav"),
-                        transcript=None,
-                        confidence_score=None,
-                    )
-
-                    artifacts.append(
-                        Artifact(
-                            artifact_id=f"{submission_id}_audio_{scol}",
-                            artifact_type=ArtifactType.AUDIO,
-                            content=audio_art,
-                            metadata={"question_col": scol, "audio_url": audio_url},
-                            weight=1.0,
-                        )
-                    )
-                except Exception as e:
-                    logger.debug("Skipping speaking/listening col %s due to parsing issue: %s", scol, e)
-                    continue
-
-            # 4) If nothing detected, fall back to wrap the whole row as TEXT artifact (keeps pipeline running)
-            if not artifacts:
-                artifacts.append(
-                    Artifact(
-                        artifact_id=f"{submission_id}_dynamic_{idx}",
-                        artifact_type=ArtifactType.TEXT,
-                        content=TextArtifact(text_content=json.dumps(row_dict, default=str), word_count=len(str(row_dict).split())),
-                        metadata={"source": "dynamic_fallback"},
-                        weight=1.0,
-                    )
-                )
-
-            # Build metadata object
-            metadata = SubmissionMetadata(
-                submission_id=submission_id,
-                batch_id=batch_id,
-                student_id=student_id,
-                course_id=str(row_dict.get("course_id") or row_dict.get("course") or "unknown"),
-                assignment_id=str(row_dict.get("assignment_id") or "unknown"),
-                timestamp=datetime.utcnow(),
-                additional_metadata={},
+        try:
+            response = self.client.chat.completions.create(
+                model=self.config.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that parses CSV data into structured JSON for an educational assessment system."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
             )
+            
+            content = response.choices[0].message.content
+            data = json.loads(content)
+            
+            submissions_data = data.get("submissions", [])
+            submissions = []
+            
+            for sub_data in submissions_data:
+                try:
+                    submissions.append(self._reconstruct_submission(sub_data))
+                except Exception as e:
+                    logger.error(f"Failed to reconstruct submission from LLM output: {e}")
+                    continue
+                    
+            logger.info(f"LLM parser generated {len(submissions)} submission(s)")
+            return submissions
+            
+        except Exception as e:
+            logger.exception("LLM parsing failed: %s", e)
+            raise
 
-            submission = Submission(metadata=metadata, artifacts=artifacts)
-            submissions.append(submission)
+    def _reconstruct_submission(self, data: Dict[str, Any]) -> Submission:
+        """Reconstruct Submission object from dictionary."""
+        # Handle metadata
+        meta_data = data.get("metadata", {})
+        
+        # Ensure required fields are strings and present
+        required_fields = ["submission_id", "batch_id", "student_id", "course_id", "assignment_id"]
+        for field in required_fields:
+            val = meta_data.get(field)
+            if val is None:
+                meta_data[field] = f"unknown_{field}"
+            else:
+                meta_data[field] = str(val)
 
-        logger.info(f"Dynamic parser generated {len(submissions)} submission(s)")
-        return submissions
+        # Ensure timestamp is datetime
+        if "timestamp" in meta_data and isinstance(meta_data["timestamp"], str):
+            meta_data["timestamp"] = self._parse_timestamp(meta_data["timestamp"])
+        elif "timestamp" not in meta_data:
+             meta_data["timestamp"] = datetime.utcnow()
+            
+        metadata_obj = SubmissionMetadata(**meta_data)
+        
+        # Handle artifacts
+        artifacts_list = []
+        for art_data in data.get("artifacts", []):
+            art_type = art_data.get("artifact_type")
+            content_data = art_data.get("content")
+            
+            if art_type == ArtifactType.MCQ:
+                # Sanitize MCQ answers
+                if "answers" in content_data and isinstance(content_data["answers"], list):
+                    for ans in content_data["answers"]:
+                        # Ensure string fields are strings
+                        for k in ["question_id", "selected_option", "correct_option"]:
+                            if k in ans and ans[k] is not None:
+                                ans[k] = str(ans[k])
+                content_obj = MCQArtifact(**content_data)
+                
+            elif art_type == ArtifactType.TEXT:
+                # Sanitize Text content
+                if "text_content" in content_data and content_data["text_content"] is not None:
+                    content_data["text_content"] = str(content_data["text_content"])
+                content_obj = TextArtifact(**content_data)
+                
+            elif art_type == ArtifactType.AUDIO:
+                # AudioArtifact expects audio_data as bytes
+                if "audio_data" not in content_data or content_data["audio_data"] is None:
+                    content_data["audio_data"] = b""
+                # Ensure duration_seconds is float
+                if "duration_seconds" not in content_data or content_data["duration_seconds"] is None:
+                    content_data["duration_seconds"] = 0.0
+                else:
+                    try:
+                        content_data["duration_seconds"] = float(content_data["duration_seconds"])
+                    except:
+                        content_data["duration_seconds"] = 0.0
+                # Ensure sample_rate is int
+                if "sample_rate" not in content_data or content_data["sample_rate"] is None:
+                    content_data["sample_rate"] = 44100
+                else:
+                    try:
+                        content_data["sample_rate"] = int(content_data["sample_rate"])
+                    except:
+                        content_data["sample_rate"] = 44100
+                        
+                content_obj = AudioArtifact(**content_data)
+            else:
+                # Fallback or error
+                logger.warning(f"Unknown artifact type: {art_type}")
+                continue
+            
+            # Sanitize artifact_id
+            if "artifact_id" in art_data and art_data["artifact_id"] is not None:
+                art_data["artifact_id"] = str(art_data["artifact_id"])
+                
+            art_data["content"] = content_obj
+            artifacts_list.append(Artifact(**art_data))
+            
+        return Submission(metadata=metadata_obj, artifacts=artifacts_list)
