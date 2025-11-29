@@ -28,6 +28,7 @@ class S3Handler:
         # determine mode
         self.local_mode = self.aws.env == "local"
         self.root = self.aws.local_root
+        print(f"DEBUG: S3Handler initialized. env={self.aws.env}, local_mode={self.local_mode}")
 
         if self.local_mode:
             logger.info(f"S3Handler running in LOCAL mode. Root: {self.root}")
@@ -254,3 +255,21 @@ class S3Handler:
             )
 
             return f"s3://{bucket}/{key}"
+
+    def upload_text(self, bucket: str, key: str, text: str):
+        """Upload text content."""
+        if self.local_mode:
+            path = self._fs_path(bucket, key)
+            logger.info(f"[LOCAL] Upload TEXT: {path}")
+            self._ensure_local_dir(path)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+        logger.info(f"[AWS] Upload TEXT: s3://{bucket}/{key}")
+        self.s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=text.encode("utf-8"),
+            ContentType="text/plain",
+        )

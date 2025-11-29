@@ -96,7 +96,8 @@ class ScoreAggregator:
             overall_score=round(overall_score, 2),
             passed=passed,
             excellence_achieved=excellence_achieved,
-            weights_applied=self.artifact_weights
+            weights_applied=self.artifact_weights,
+            artifact_results=submission.artifact_results
         )
 
     # -------------------------------------------------------------------------

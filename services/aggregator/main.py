@@ -63,9 +63,9 @@ class AggregatorService:
 
 
         # Step 4: Generate Athena-friendly CSV export
-        csv_data = self.csv_exporter.export_batch_to_csv(batch_report)
+        csv_data = self.csv_exporter.export_batch_to_csv_local(batch_report)
         csv_key = f"batches/{batch_id}/aggregated_results.csv"
-        bucket = self.aws_config.results_bucket
+        bucket = self.aws_config.results_bucket or "results"
         if not bucket:
             logger.error("AWS S3 results_bucket not configured; skipping CSV upload")
         else:
@@ -80,9 +80,9 @@ class AggregatorService:
             try:
                 pdf_key = f"batches/{batch_id}/reports/{report.student_id}.pdf"
                 self.pdf_generator.generate_and_upload_pdf(
-            report,
-            bucket=self.aws_config.reports_bucket or self.aws_config.results_bucket or "local-results"
-        )
+                    report,
+                    bucket=self.aws_config.reports_bucket or self.aws_config.results_bucket or "results"
+                )
 
                 logger.debug(f"Generated and uploaded PDF for student {report.student_id}")
             except Exception as e:
@@ -90,7 +90,7 @@ class AggregatorService:
 
         # Step 6: Upload batch report JSON to S3
         json_key = f"batches/{batch_id}/batch_report.json"
-        bucket = self.aws_config.results_bucket
+        bucket = self.aws_config.results_bucket or "results"
         if not bucket:
             logger.error("AWS S3 results_bucket not configured; skipping batch report JSON upload")
         else:

@@ -56,6 +56,14 @@ class MCQProcessor(BaseProcessor):
                 "correct_answers": evaluation_result["correct_answers"],
                 "accuracy_percentage": evaluation_result["accuracy_percentage"],
                 "evaluation_method": evaluation_result["evaluation_method"],
+                "answers_breakdown": [
+                    {
+                        "question_id": a.question_id,
+                        "selected_option": a.selected_option,
+                        "correct_option": a.correct_option,
+                        "is_correct": a.is_correct
+                    } for a in mcq_artifact.answers
+                ]
             },
             errors=[],
             processed_at=datetime.utcnow(),

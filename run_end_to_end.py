@@ -4,15 +4,15 @@ import json
 import os
 import sys
 
+# Force local environment BEFORE importing services that use config
+os.environ["ACE_ENV"] = "local"
+os.environ["AWS_RESULTS_BUCKET"] = "results"
+os.environ["AWS_REPORTS_BUCKET"] = "results"
+
 from services.ingestion.csv_parser import CSVParser
 from services.orchestrator.task_orchestrator import Orchestrator
 from services.orchestrator.completion_service import CompletionService
 from services.aggregator.main import AggregatorService
-
-# Force local environment
-os.environ["ACE_ENV"] = "local"
-os.environ["AWS_RESULTS_BUCKET"] = "local-results"
-os.environ["AWS_REPORTS_BUCKET"] = "local-reports"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)

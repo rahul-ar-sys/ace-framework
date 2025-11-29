@@ -85,6 +85,8 @@ class Orchestrator:
             task = ProcessingTask(
                 task_id=f"{submission.metadata.submission_id}_{artifact.artifact_id}",
                 submission_id=submission.metadata.submission_id,
+                batch_id=submission.metadata.batch_id,
+                student_id=submission.metadata.student_id,
                 artifact_id=artifact.artifact_id,
                 artifact_type=artifact.artifact_type,
                 artifact_payload=payload,

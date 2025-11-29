@@ -27,7 +27,8 @@ class AWSConfig(BaseModel):
     """
 
     # environment mode
-    env: str = os.getenv("ACE_ENV", "local")  # "local" | "dev" | "prod"
+    env: str = os.getenv("ACE_ENV", "local")
+    # print(f"DEBUG: AWSConfig loaded. ACE_ENV={env}")
 
     # AWS credentials (optional for local)
     aws_access_key: str | None = os.getenv("AWS_ACCESS_KEY_ID")

@@ -48,13 +48,15 @@ class ResultCollector:
 
         if self.aws_config.env == "local":
             # Local filesystem mode
-            local_dir = "local_s3/results"
+            bucket = self.aws_config.results_bucket or "results"
+            local_dir = os.path.join("local_s3", bucket, "batches", batch_id, "submissions")
+            
             if not os.path.exists(local_dir):
                 logger.warning(f"Local results directory {local_dir} does not exist.")
                 return []
             
             for filename in os.listdir(local_dir):
-                if filename.endswith(".json") and filename.startswith(f"{batch_id}_"):
+                if filename.endswith(".json"):
                     try:
                         with open(os.path.join(local_dir, filename), "r", encoding="utf-8") as f:
                             data = json.load(f)

@@ -6,8 +6,13 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-import boto3
-from botocore.exceptions import ClientError
+# --- Local File Imports ---
+import os
+# The following AWS/Boto3 imports are kept but 'boto3' and 'ClientError'
+# are only used in the __init__ and are no longer relevant to the local
+# export function. I will comment them out for a clean local version.
+# import boto3
+# from botocore.exceptions import ClientError
 
 from config.settings import get_aws_config
 from config.models.core_models import BatchReport, StudentReport
@@ -17,39 +22,51 @@ logger = logging.getLogger(__name__)
 
 class CSVExporter:
     """
-    Exports batch-level ACE reports into Athena-friendly CSV files.
+    Exports batch-level ACE reports into local CSV files.
     Each student report becomes a single row with flattened columns.
     """
 
     def __init__(self):
-        """Initialize CSV exporter with AWS configuration."""
-        self.aws_config = get_aws_config()
-        self.s3_client = boto3.client('s3', region_name=self.aws_config.region)
-        logger.info("CSVExporter initialized")
+        """Initialize CSV exporter with (optional) AWS configuration."""
+        # For local testing, we keep the config initialization but
+        # skip the s3_client initialization if we aren't using S3.
+        # Keeping it for completeness if other methods rely on it.
+        try:
+            self.aws_config = get_aws_config()
+            # self.s3_client = boto3.client('s3', region_name=self.aws_config.region)
+            logger.info("CSVExporter initialized (AWS components skipped for local file mode)")
+        except Exception:
+            # Handle cases where config might not be fully set up locally
+            logger.warning("AWS config not available. Running in purely local mode.")
+            self.aws_config = None
 
     # -------------------------------------------------------------------------
     # Public Methods
     # -------------------------------------------------------------------------
 
-    def export_batch_to_csv(
+    def export_batch_to_csv_local(
         self,
         batch_report: BatchReport,
-        bucket: Optional[str] = None,
+        local_dir: str = "local_s3/", # Renamed 'bucket' to 'local_dir'
         prefix: str = "exports/"
     ) -> str:
         """
-        Generate a CSV from batch report and upload it to S3.
+        Generate a CSV from batch report and save it to a local directory.
 
         Args:
             batch_report: BatchReport object to export
-            bucket: Optional target S3 bucket (defaults to results_bucket)
-            prefix: Folder prefix within the bucket
+            local_dir: Target local directory to save the file (defaults to 'local_s3/')
+            prefix: Subdirectory/prefix within the local directory
         Returns:
-            S3 URI to the uploaded CSV file
+            Local file path to the saved CSV file
         """
-        bucket = bucket or self.aws_config.reports_bucket
+        # 1. Define the full directory path and ensure it exists
+        full_dir_path = os.path.join(local_dir, prefix)
+        os.makedirs(full_dir_path, exist_ok=True)
+        
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        key = f"{prefix}{batch_report.batch_id}_{timestamp}.csv"
+        filename = f"{batch_report.batch_id}_{timestamp}.csv"
+        file_path = os.path.join(full_dir_path, filename) # Final local path
 
         try:
             logger.info(f"Generating CSV for batch {batch_report.batch_id}")
@@ -62,32 +79,31 @@ class CSVExporter:
                 row = self._student_report_to_row(student_report, batch_report)
                 writer.writerow(row)
 
-            # Upload CSV to S3
-            csv_bytes = csv_buffer.getvalue().encode("utf-8")
-            self.s3_client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=csv_bytes,
-                ContentType="text/csv",
-                Metadata={
-                    "batch_id": batch_report.batch_id,
-                    "record_count": str(len(batch_report.student_reports))
-                }
-            )
+            # --- LOCAL FILE WRITING LOGIC (REPLACES S3 UPLOAD) ---
+            csv_content = csv_buffer.getvalue()
 
-            s3_path = f"s3://{bucket}/{key}"
-            logger.info(f"CSV successfully uploaded to {s3_path}")
-            return s3_path
+            logger.info(f"Saving CSV locally to {file_path}")
+            # Write the content to the local file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(csv_content)
+            # -----------------------------------------------------
 
-        except ClientError as e:
-            logger.error(f"Failed to upload CSV to S3: {e}")
-            raise
+            logger.info(f"CSV successfully saved locally to {file_path}")
+            return file_path # Return the local path
+
         except Exception as e:
-            logger.error(f"Error exporting batch to CSV: {e}")
+            # Replaced ClientError (AWS specific) with a generic Exception handler
+            logger.error(f"Error exporting batch to CSV locally: {e}")
             raise
+    
+    # Keeping the original S3 function commented out for quick reference/switch back
+    # def export_batch_to_csv( ... ) -> str:
+    #     ... (Original S3 logic) ...
+    #     pass
+
 
     # -------------------------------------------------------------------------
-    # Internal Helpers
+    # Internal Helpers (Unchanged)
     # -------------------------------------------------------------------------
 
     def _get_csv_headers(self) -> List[str]:
@@ -157,5 +173,5 @@ class CSVExporter:
             writer.writerow([student_id, overall_score, status])
 
         csv_data = buffer.getvalue()
-        logger.info(f"Exported CSV for batch {report.batch_id} ({len(report.student_reports)} students).")
+        logger.info(f"Exported CSV string for batch {report.batch_id} ({len(report.student_reports)} students).")
         return csv_data

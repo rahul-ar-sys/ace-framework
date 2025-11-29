@@ -14,7 +14,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 from config.settings import get_aws_config
-from config.models.core_models import StudentReport
+from config.models.core_models import StudentReport, ArtifactType, ArtifactResult
 from processors.ai_client import AIClient
 
 logger = logging.getLogger(__name__)
@@ -25,13 +25,19 @@ class PDFGenerator:
 
     def __init__(self):
         self.aws_config = get_aws_config()
-        try:
-            self.s3_client = boto3.client("s3", region_name=self.aws_config.region)
-            logger.info("✅ Initialized real AWS S3 client.")
-        except Exception:
-            self.s3_client = None
-            logger.warning("⚠️ Falling back to local PDF save mode.")
         self.ai_client = AIClient()
+        
+        if self.aws_config.env == "local":
+            self.s3_client = None
+            logger.info("⚠️ PDFGenerator running in LOCAL mode (no S3 client).")
+        else:
+            try:
+                self.s3_client = boto3.client("s3", region_name=self.aws_config.region)
+                logger.info("✅ Initialized real AWS S3 client.")
+            except Exception:
+                self.s3_client = None
+                logger.warning("⚠️ Falling back to local PDF save mode.")
+        
         logger.info("AI-powered PDFGenerator initialized")
 
     # -------------------------------------------------------------------------
@@ -61,6 +67,7 @@ class PDFGenerator:
         key = f"{prefix}{batch_id}/reports/{report.student_id}.pdf"
 
         logger.info(f"🧾 Generating AI-enhanced PDF for {report.student_id}")
+        print(f"DEBUG: PDFGenerator.generate_and_upload_pdf env={self.aws_config.env}, bucket={bucket_name}")
 
         # Step 1: Generate feedback
         ai_feedback = self._generate_ai_feedback(report)
@@ -168,12 +175,105 @@ class PDFGenerator:
         story.append(Spacer(1, 0.4 * inch))
         story.extend(self._build_ai_feedback_section(ai_feedback))
         story.append(Spacer(1, 0.5 * inch))
+        
+        # New Detailed Analysis Section
+        story.extend(self._build_detailed_analysis(report))
+        
+        story.append(Spacer(1, 0.5 * inch))
         story.extend(self._build_footer())
 
         doc.build(story)
         pdf_data = buffer.getvalue()
         buffer.close()
         return pdf_data
+
+    def _build_detailed_analysis(self, report: StudentReport):
+        elements = []
+        if not report.artifact_results:
+            return elements
+
+        title_style = ParagraphStyle(
+            name="SectionTitle", fontSize=16, leading=20, textColor=colors.HexColor("#1B365D"), spaceAfter=10
+        )
+        elements.append(Paragraph("Detailed Artifact Analysis", title_style))
+        elements.append(Spacer(1, 0.2 * inch))
+
+        for artifact in report.artifact_results:
+            if artifact.artifact_type == ArtifactType.MCQ:
+                elements.extend(self._build_mcq_section(artifact))
+            else:
+                elements.extend(self._build_generic_artifact_section(artifact))
+            elements.append(Spacer(1, 0.3 * inch))
+            
+        return elements
+
+    def _build_mcq_section(self, artifact: ArtifactResult):
+        elements = []
+        sub_title_style = ParagraphStyle(
+            name="SubTitle", fontSize=14, textColor=colors.HexColor("#2C3E50"), spaceAfter=6
+        )
+        elements.append(Paragraph(f"MCQ Analysis (Score: {artifact.overall_score:.1f}%)", sub_title_style))
+        
+        # Table Data
+        data = [["Question ID", "Selected", "Correct", "Result"]]
+        
+        breakdown = artifact.metadata.get("answers_breakdown", [])
+        for item in breakdown:
+            is_correct = item.get("is_correct", False)
+            result_text = "Correct" if is_correct else "Incorrect"
+            data.append([
+                str(item.get("question_id", "")),
+                str(item.get("selected_option", "")),
+                str(item.get("correct_option", "")),
+                result_text
+            ])
+            
+        if len(data) > 1:
+            table = Table(data, colWidths=[1.5 * inch, 1.5 * inch, 1.5 * inch, 1.5 * inch])
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ]))
+            elements.append(table)
+        else:
+            elements.append(Paragraph("No detailed MCQ data available.", ParagraphStyle(name="Normal")))
+            
+        return elements
+
+    def _build_generic_artifact_section(self, artifact: ArtifactResult):
+        elements = []
+        sub_title_style = ParagraphStyle(
+            name="SubTitle", fontSize=14, textColor=colors.HexColor("#2C3E50"), spaceAfter=6
+        )
+        elements.append(Paragraph(f"{artifact.artifact_type.value.title()} Analysis", sub_title_style))
+        
+        # Feedback
+        elements.append(Paragraph(f"<b>Feedback:</b> {artifact.feedback}", ParagraphStyle(name="Normal")))
+        elements.append(Spacer(1, 0.1 * inch))
+        
+        # ACE Scores
+        data = [["Dimension", "Score", "Feedback"]]
+        for score in artifact.ace_scores:
+            data.append([
+                score.dimension.value.title(),
+                f"{score.score:.1f}",
+                score.feedback or ""
+            ])
+            
+        table = Table(data, colWidths=[1.5 * inch, 1 * inch, 4 * inch])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("WORDWRAP", (0, 0), (-1, -1), True),
+        ]))
+        elements.append(Spacer(1, 0.1 * inch))
+        elements.append(table)
+        
+        return elements
 
     # -------------------------------------------------------------------------
     # Components

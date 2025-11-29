@@ -62,10 +62,14 @@ class CompletionService:
     # ------------------------------------------------------------------
     def upload_submission(self, submission: SubmissionResult) -> str:
         """Upload final JSON to S3 results bucket."""
+        print(f"DEBUG: CompletionService.upload_submission env={self.aws.env}")
         if self.aws.env == "local":
             # local filesystem mode
-            os.makedirs("local_s3/results", exist_ok=True)
-            path = f"local_s3/results/{submission.batch_id}_{submission.submission_id}.json"
+            bucket = self.aws.results_bucket or "results"
+            key = f"batches/{submission.batch_id}/submissions/{submission.submission_id}.json"
+            path = os.path.join("local_s3", bucket, key)
+            
+            os.makedirs(os.path.dirname(path), exist_ok=True)
 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(submission.model_dump_json(indent=2))

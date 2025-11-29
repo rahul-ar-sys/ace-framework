@@ -178,6 +178,9 @@ class StudentReport(BaseModel):
     # Metadata
     weights_applied: Dict[str, float] = {}
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Detailed Results (for PDF generation)
+    artifact_results: List["ArtifactResult"] = Field(default_factory=list)
 
     class Config:
         json_schema_extra = {
