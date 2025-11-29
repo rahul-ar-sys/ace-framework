@@ -69,6 +69,16 @@ class PDFGenerator:
         pdf_bytes = self._generate_pdf(report, ai_feedback)
 
         # Step 3: Upload or save locally
+        # Step 3: Upload or save locally
+        if self.aws_config.env == "local":
+            # Force local save for local environment
+            local_path = os.path.join("local_s3", bucket_name, key)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(pdf_bytes)
+            logger.info(f"🗂️ Saved local PDF to {local_path}")
+            return f"file://{os.path.abspath(local_path)}"
+
         if self.s3_client:
             try:
                 self.s3_client.put_object(
@@ -89,7 +99,8 @@ class PDFGenerator:
                 return s3_uri
             except ClientError as e:
                 logger.error(f"❌ Failed to upload PDF to S3: {e}", exc_info=True)
-        # Fallback for local environments
+        
+        # Fallback if S3 client is missing or upload fails (and not explicitly local)
         local_path = os.path.join("local_s3", bucket_name, key)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "wb") as f:

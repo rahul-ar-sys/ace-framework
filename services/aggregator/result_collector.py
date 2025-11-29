@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import os
 from typing import List, Dict, Optional
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
@@ -37,30 +38,49 @@ class ResultCollector:
         Collect all processed submission results for a batch.
         Looks for JSON files in:
             s3://<results_bucket>/batches/<batch_id>/submissions/
+        Or locally in:
+            local_s3/results/
         """
         start_time = time.time()
-        prefix = f"batches/{batch_id}/submissions/"
         results = []
 
         logger.info(f"Collecting submission results for batch {batch_id}")
 
-        try:
-            # ✅ Ensure bucket is a valid string
-            bucket = self.aws_config.results_bucket or ""
-            if not bucket:
-                raise ValueError("AWS results bucket not configured in environment.")
+        if self.aws_config.env == "local":
+            # Local filesystem mode
+            local_dir = "local_s3/results"
+            if not os.path.exists(local_dir):
+                logger.warning(f"Local results directory {local_dir} does not exist.")
+                return []
+            
+            for filename in os.listdir(local_dir):
+                if filename.endswith(".json") and filename.startswith(f"{batch_id}_"):
+                    try:
+                        with open(os.path.join(local_dir, filename), "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            results.append(SubmissionResult(**data))
+                    except Exception as e:
+                        logger.error(f"Failed to load local result {filename}: {e}")
+        else:
+            # S3 mode
+            prefix = f"batches/{batch_id}/submissions/"
+            try:
+                # ✅ Ensure bucket is a valid string
+                bucket = self.aws_config.results_bucket or ""
+                if not bucket:
+                    raise ValueError("AWS results bucket not configured in environment.")
 
-            # Step 1: List all result files (with pagination)
-            s3_objects = self._list_result_files(bucket, prefix)
+                # Step 1: List all result files (with pagination)
+                s3_objects = self._list_result_files(bucket, prefix)
 
-            # Step 2: Download and parse each result file
-            for obj in s3_objects:
-                result = self._load_submission_result(bucket, obj["Key"])
-                if result:
-                    results.append(result)
+                # Step 2: Download and parse each result file
+                for obj in s3_objects:
+                    result = self._load_submission_result(bucket, obj["Key"])
+                    if result:
+                        results.append(result)
 
-        except Exception as e:
-            logger.error(f"Error collecting results for batch {batch_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error collecting results for batch {batch_id}: {e}")
 
         logger.info(f"Finished collecting results for batch {batch_id} in {time.time() - start_time:.2f}s")
         return results

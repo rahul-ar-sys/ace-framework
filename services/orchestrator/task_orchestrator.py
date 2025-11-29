@@ -68,12 +68,26 @@ class Orchestrator:
         tasks: List[ProcessingTask] = []
 
         for artifact in submission.artifacts:
+            # Convert content to dict if possible to merge metadata
+            payload = artifact.content
+            if hasattr(payload, "model_dump"):
+                payload = payload.model_dump()
+            elif hasattr(payload, "dict"):
+                payload = payload.dict()
+            
+            # If payload is now a dict, merge metadata into it
+            # This ensures 'audio_url' from metadata is available to AudioProcessor
+            if isinstance(payload, dict):
+                # We use a copy to avoid modifying the original artifact content in place if it's shared
+                payload = payload.copy()
+                payload.update(artifact.metadata)
+
             task = ProcessingTask(
                 task_id=f"{submission.metadata.submission_id}_{artifact.artifact_id}",
                 submission_id=submission.metadata.submission_id,
                 artifact_id=artifact.artifact_id,
                 artifact_type=artifact.artifact_type,
-                artifact_payload=artifact.content,
+                artifact_payload=payload,
                 routing_config=artifact.metadata.get("routing_config", {}),
                 retry_count=0,
                 max_retries=3,

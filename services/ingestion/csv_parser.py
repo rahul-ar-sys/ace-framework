@@ -291,6 +291,7 @@ class CSVParser:
         
         For AUDIO artifacts (artifact_type="audio"):
         - content should be an object with: audio_data (null), duration_seconds (float), sample_rate (int), format (string), transcript (string or null).
+        - IMPORTANT: You MUST extract the audio URL from the column and place it in the 'metadata' object with key "audio_url".
         
         Infer the structure from the CSV columns.
         - Columns starting with numbers or containing "score" are likely MCQs.
@@ -359,6 +360,10 @@ class CSVParser:
             art_type = art_data.get("artifact_type")
             content_data = art_data.get("content")
             
+            # Ensure metadata dict exists
+            if "metadata" not in art_data:
+                art_data["metadata"] = {}
+
             if art_type == ArtifactType.MCQ:
                 # Sanitize MCQ answers
                 if "answers" in content_data and isinstance(content_data["answers"], list):
@@ -376,6 +381,10 @@ class CSVParser:
                 content_obj = TextArtifact(**content_data)
                 
             elif art_type == ArtifactType.AUDIO:
+                # Check if audio_url is in content (LLM mistake) and move to metadata
+                if "audio_url" in content_data:
+                    art_data["metadata"]["audio_url"] = content_data.pop("audio_url")
+
                 # AudioArtifact expects audio_data as bytes
                 if "audio_data" not in content_data or content_data["audio_data"] is None:
                     content_data["audio_data"] = b""
@@ -395,6 +404,12 @@ class CSVParser:
                         content_data["sample_rate"] = int(content_data["sample_rate"])
                     except:
                         content_data["sample_rate"] = 44100
+                
+                # Ensure format is string
+                if "format" not in content_data or content_data["format"] is None:
+                    content_data["format"] = "unknown"
+                else:
+                    content_data["format"] = str(content_data["format"])
                         
                 content_obj = AudioArtifact(**content_data)
             else:

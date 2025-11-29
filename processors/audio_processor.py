@@ -71,6 +71,7 @@ class AudioProcessor(BaseProcessor):
             feedback=ai_result.get("overall_feedback", "Evaluation complete."),
             metadata={
                 "audio_url": audio_link,
+                "transcript": transcript,
                 "transcript_excerpt": transcript[:200] + ("..." if len(transcript) > 200 else ""),
                 "whisper_model": self.ai_config.whisper_model,
                 "transcription_confidence": None,  # Optional: can be computed later
@@ -105,7 +106,7 @@ class AudioProcessor(BaseProcessor):
             audio_bytes.name = "input_audio.wav"  # required by OpenAI API
 
             response = self.ai_client.client.audio.transcriptions.create(
-                model=f"whisper-{self.ai_config.whisper_model}",
+                model="whisper-1",
                 file=audio_bytes
             )
 
