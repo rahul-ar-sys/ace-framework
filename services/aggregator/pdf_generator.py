@@ -76,7 +76,6 @@ class PDFGenerator:
         pdf_bytes = self._generate_pdf(report, ai_feedback)
 
         # Step 3: Upload or save locally
-        # Step 3: Upload or save locally
         if self.aws_config.env == "local":
             # Force local save for local environment
             local_path = os.path.join("local_s3", bucket_name, key)
@@ -212,6 +211,7 @@ class PDFGenerator:
         sub_title_style = ParagraphStyle(
             name="SubTitle", fontSize=14, textColor=colors.HexColor("#2C3E50"), spaceAfter=6
         )
+        # Format score to show 1 decimal place, e.g., 85.8%
         elements.append(Paragraph(f"MCQ Analysis (Score: {artifact.overall_score:.1f}%)", sub_title_style))
         
         # Table Data
@@ -223,17 +223,22 @@ class PDFGenerator:
             result_text = "Correct" if is_correct else "Incorrect"
             data.append([
                 str(item.get("question_id", "")),
-                str(item.get("selected_option", "")),
-                str(item.get("correct_option", "")),
+                Paragraph(str(item.get("selected_option", "")), ParagraphStyle(name="Normal", fontSize=10)), # Use Paragraph for wrapping
+                Paragraph(str(item.get("correct_option", "")), ParagraphStyle(name="Normal", fontSize=10)), # Use Paragraph for wrapping
                 result_text
             ])
             
         if len(data) > 1:
-            table = Table(data, colWidths=[1.5 * inch, 1.5 * inch, 1.5 * inch, 1.5 * inch])
+            # Adjusted column widths for better fit
+            # Total width for A4 is around 7.5 inches. (A4 width - margins)
+            table = Table(data, colWidths=[1.0 * inch, 2.3 * inch, 2.3 * inch, 1.0 * inch])
             table.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"), # Question ID centered
+                ("ALIGN", (-1, 0), (-1, -1), "CENTER"), # Result centered
+                ("ALIGN", (1, 0), (2, -1), "LEFT"), # Options left-aligned
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ]))
             elements.append(table)
@@ -258,15 +263,18 @@ class PDFGenerator:
         for score in artifact.ace_scores:
             data.append([
                 score.dimension.value.title(),
-                f"{score.score:.1f}",
-                score.feedback or ""
+                f"{score.score:.1f}", # Changed to .1f for cleaner score
+                Paragraph(score.feedback or "", ParagraphStyle(name="Normal", fontSize=10)) # Ensure feedback is a Paragraph object for wrapping
             ])
             
-        table = Table(data, colWidths=[1.5 * inch, 1 * inch, 4 * inch])
+        # Total A4 print width is ~7.5 inches.
+        # Dimension: 1.5 in | Score: 0.7 in | Feedback: 5.3 in (Total: 7.5 in)
+        table = Table(data, colWidths=[1.5 * inch, 0.7 * inch, 5.3 * inch])
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), # Vertically align text to the top
+            ("ALIGN", (1, 1), (1, -1), "CENTER"), # Center scores
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("WORDWRAP", (0, 0), (-1, -1), True),
         ]))
